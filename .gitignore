@@ -1,0 +1,7 @@
+ref/
+build*/
+dist/
+third_party/openvr/
+toolchain/
+research/
+__pycache__/

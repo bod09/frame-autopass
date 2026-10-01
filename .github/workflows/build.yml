@@ -1,0 +1,36 @@
+# Build and test every push; publish a release for every v* tag.
+# The release package is built the same way on every push, so a tag never
+# ships something that has not been built before.
+name: build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags for the version
+      - name: Fetch toolchain and SDK headers
+        run: scripts/fetch-deps.sh
+      - name: Host tests
+        run: make test
+      - name: Release package
+        run: make dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frame-autopass-${{ github.sha }}
+          path: dist/
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
+            dist/frame-autopass-aarch64.tar.gz dist/frame-autopass-aarch64.tar.gz.sha256 dist/install.sh
