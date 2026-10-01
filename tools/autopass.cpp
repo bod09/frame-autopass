@@ -54,9 +54,12 @@ std::string unit_path() {
     return base + "/systemd/user/" + kUnit;
 }
 
-// Runs `systemctl --user ARGS...`, returns its exit code.
+// Runs `systemctl --user ARGS...`, returns its exit code. Always against
+// the login session's user manager: Desktop Mode on the Frame runs Konsole
+// in a nested session whose XDG_RUNTIME_DIR and D-Bus cannot reach it.
 int systemctl(std::initializer_list<const char*> args, bool quiet = false) {
-    std::string cmd = "systemctl --user";
+    const std::string run = "/run/user/" + std::to_string(::getuid());
+    std::string cmd = "XDG_RUNTIME_DIR=" + run + " DBUS_SESSION_BUS_ADDRESS=unix:path=" + run + "/bus systemctl --user";
     for (const char* a : args) cmd += std::string(" ") + a;
     if (quiet) cmd += " >/dev/null 2>&1";
     const int rc = std::system(cmd.c_str());
@@ -204,7 +207,8 @@ int report() {
     section(&out, "date", "date");
     section(&out, "SteamOS", "grep -E '^(VERSION_ID|BUILD_ID)=' /etc/os-release");
     section(&out, "SteamVR", "cat /opt/steamvr/bin/version.txt; grep -m1 -E 'cv: version [0-9]' ~/.local/share/Steam/logs/vrserver.txt");
-    section(&out, "unit", std::string("systemctl --user status --no-pager ") + kUnit + " | head -5");
+    section(&out, "unit", "XDG_RUNTIME_DIR=/run/user/" + std::to_string(::getuid()) +
+                              " systemctl --user status --no-pager " + kUnit + " | head -5");
     section(&out, "status", "cat " + autopass::status_path());
     section(&out, "config", "cat " + autopass::conf_path() + " 2>/dev/null || echo '(defaults)'");
     section(&out, "crash guard", "cat " + autopass::crash_guard_path() + " 2>/dev/null || echo '(empty)'");

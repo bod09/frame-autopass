@@ -21,6 +21,12 @@ fail() { printf 'frame-autopass: %s\n' "$*" >&2; exit 1; }
 [ "$(uname -m)" = "aarch64" ] || fail "this is for the Steam Frame (aarch64); this machine is $(uname -m)."
 command -v systemctl >/dev/null || fail "systemd not found."
 
+# Desktop Mode on the Frame runs Konsole in a nested session with its own
+# XDG_RUNTIME_DIR and D-Bus, where `systemctl --user` cannot reach the real
+# user service manager. Always talk to the login session's one.
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+
 if ! grep -qs arcimx616 /sys/class/video4linux/*/name; then
     fail "the Arcturus Vision colour module was not found. frame-autopass switches between that module
 and the built-in IR cameras, so it needs the module attached."
