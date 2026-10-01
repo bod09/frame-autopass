@@ -23,7 +23,9 @@ nothing at all while passthrough is not showing.
 
 ## Install
 
-On the headset, switch to Desktop Mode, open **Konsole** and paste:
+On the headset, switch to Desktop Mode, copy the command below (copy button
+on the right of the box), open **Konsole** and click **Paste** at the top
+right, then press Enter:
 
 ```sh
 curl -fsSL https://github.com/bod09/frame-autopass/releases/latest/download/install.sh | bash
@@ -36,8 +38,6 @@ curl -L bod09.github.io/frame-autopass/i | bash
 ```
 
 That's it. It starts automatically whenever SteamVR runs, from now on.
-Tip: the code blocks on GitHub have a copy button; paste into Konsole with
-Ctrl+Shift+V.
 
 The installer checks that the Arcturus module is present, downloads the
 latest release, verifies its checksum, puts two programs in
