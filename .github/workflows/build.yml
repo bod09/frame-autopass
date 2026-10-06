@@ -34,5 +34,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # actions/checkout turns annotated tags into lightweight ones; fetch
+          # the real tag so --notes-from-tag finds its message.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-from-tag \
             dist/frame-autopass-aarch64.tar.gz dist/frame-autopass-aarch64.tar.gz.sha256 dist/install.sh
