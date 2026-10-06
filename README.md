@@ -1,4 +1,4 @@
-# frame-autopass
+# <img src="tools/autopass.svg" alt="" width="44" align="top"> frame-autopass
 
 > **AI disclaimer:** built with the help of AI and tested on a single
 > headset. Treat it as experimental.
