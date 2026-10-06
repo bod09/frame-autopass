@@ -65,7 +65,7 @@ $(DEV)/libopenvr_loader.a: $(OPENVR_OBJ)
 
 DAEMON_SRC := src/autopassd.cpp src/daemon_config.cpp src/app_paths.cpp src/passthrough_state.cpp \
 	src/light_policy.cpp src/sensors.cpp src/xrservice_log.cpp
-CTL_SRC := tools/autopass.cpp src/app_paths.cpp src/passthrough_state.cpp src/private_camera.cpp
+CTL_SRC := tools/autopass.cpp src/app_paths.cpp src/light_policy.cpp src/passthrough_state.cpp src/private_camera.cpp
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 RELEASE_FLAGS := -DAUTOPASS_VERSION='"$(VERSION)"' -std=c++17 -Os -Wall -Wextra -Wno-nullability-completeness -ffunction-sections -fdata-sections -Wl,--gc-sections -s
 
@@ -91,7 +91,7 @@ dist:
 	rm -rf dist $(DEV)/autopassd $(DEV)/autopass
 	$(MAKE) $(DEV)/autopassd $(DEV)/autopass
 	mkdir -p dist/frame-autopass
-	cp $(DEV)/autopassd $(DEV)/autopass install.sh README.md LICENSE dist/frame-autopass/
+	cp $(DEV)/autopassd $(DEV)/autopass tools/autopass-settings tools/autopass.svg install.sh README.md LICENSE dist/frame-autopass/
 	tar -C dist -czf dist/frame-autopass-aarch64.tar.gz frame-autopass
 	cd dist && sha256sum frame-autopass-aarch64.tar.gz > frame-autopass-aarch64.tar.gz.sha256
 	cp install.sh dist/install.sh

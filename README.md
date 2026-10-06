@@ -31,12 +31,13 @@ right, then press Enter:
 curl -fsSL https://github.com/bod09/frame-autopass/releases/latest/download/install.sh | bash
 ```
 
-That's it. It starts automatically whenever SteamVR runs, from now on.
+That's it. It starts automatically whenever SteamVR runs, from now on, and
+**Frame Autopass** appears in the app launcher for its settings.
 
 The installer checks that the Arcturus module is present, downloads the
-latest release, verifies its checksum, puts two programs in
-`~/.local/share/frame-autopass` and registers a systemd user service that
-starts and stops with SteamVR. Everything stays in your home folder, so it
+latest release, verifies its checksum, puts its programs in
+`~/.local/share/frame-autopass`, adds the launcher entry and registers a
+systemd user service that starts and stops with SteamVR. Everything stays in your home folder, so it
 survives SteamOS updates and needs no root access.
 
 Prefer not to pipe a script into bash? Download
@@ -46,19 +47,26 @@ it, read `install.sh`, and run `./install.sh` from that folder.
 
 ## Use
 
-Just use passthrough as normal. The commands below are optional (run them
-in Konsole):
+Just use passthrough as normal: it switches on its own.
+
+To change anything, open **Frame Autopass** from the app launcher. It's only
+for settings, so it doesn't need to stay open:
+
+- **Passthrough mode:** Automatic (the default), Always colour, or Always
+  night vision.
+- What passthrough is showing right now.
+- **Check for updates**, and install them with one press.
+- **Uninstall**, which removes everything and leaves passthrough on colour.
+
+The same is available in Konsole:
 
 ```sh
-~/.local/share/frame-autopass/autopass status      # running? what is it showing, and why
-~/.local/share/frame-autopass/autopass update      # install the latest release
-~/.local/share/frame-autopass/autopass report      # write ~/frame-autopass-report.txt for a bug report
-~/.local/share/frame-autopass/autopass uninstall   # remove the service, back to plain colour passthrough
+~/.local/share/frame-autopass/autopass status            # running? what is it showing, and why
+~/.local/share/frame-autopass/autopass mode auto         # or: colour, ir
+~/.local/share/frame-autopass/autopass update            # install the latest release
+~/.local/share/frame-autopass/autopass report            # write ~/frame-autopass-report.txt for a bug report
+~/.local/share/frame-autopass/autopass uninstall --purge # remove everything, back to plain colour passthrough
 ```
-
-`uninstall` stops the service and removes it; delete
-`~/.local/share/frame-autopass` and `~/.config/frame-autopass` as well to
-remove every trace.
 
 ## How it decides
 
@@ -110,7 +118,8 @@ with the output of `autopass report`.
 ## Safety
 
 - It never opens a camera, never writes outside your home folder, and does
-  not connect to the internet (except `update`, when you run it).
+  not connect to the internet, except when you press "Check for updates" or
+  "Update" in the settings (or run `update`).
 - It only reads SteamVR's shared memory and logs. To switch, it connects to
   SteamVR for about 15 ms as a background client, which never wakes the
   headset or starts SteamVR.

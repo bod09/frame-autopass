@@ -57,10 +57,11 @@ old_version="$("$DEST/autopass" version 2>/dev/null || echo none)"
 # unit, which starts it again if SteamVR is running.
 systemctl --user stop frame-autopass.service 2>/dev/null || true
 mkdir -p "$DEST"
-for f in autopassd autopass; do
+for f in autopassd autopass autopass-settings; do
     install -m 0755 "$src/$f" "$DEST/$f.new"
     mv -f "$DEST/$f.new" "$DEST/$f"
 done
+install -m 0644 "$src/autopass.svg" "$DEST/autopass.svg"
 "$DEST/autopass" install
 
 if [ "$old_version" = "none" ]; then
@@ -68,4 +69,4 @@ if [ "$old_version" = "none" ]; then
 else
     say "frame-autopass updated: $old_version -> $new_version."
 fi
-say "Check it any time with: $DEST/autopass status"
+say "Settings: open Frame Autopass from the app launcher (only needed to change settings)."

@@ -18,6 +18,9 @@ inline std::string log_path() { return config_dir() + "/autopassd.log"; }
 inline std::string conf_path() { return config_dir() + "/autopass.conf"; }
 inline std::string lock_path() { return config_dir() + "/autopassd.lock"; }
 // Crash guard: XRService restarts soon after an autopassd switch, one line each.
+// Passthrough mode chosen in the settings panel or `autopass mode`: one
+// word, auto (default), colour or ir. autopassd watches it with inotify.
+inline std::string mode_path() { return config_dir() + "/mode"; }
 inline std::string crash_guard_path() { return config_dir() + "/crash_guard"; }
 
 // Creates the directory and its parents. Returns false on failure.

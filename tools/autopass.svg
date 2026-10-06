@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Frame Autopass: an eye, half warm sunlight (colour), half the blue SteamVR tints IR night vision with (camera.monochromeTintHue 0.67).
+       No clip paths: KDE renders icons with Qt SVG (SVG Tiny), which ignores them, so each half is drawn as its own eye-shaped path
+       (the outline's Bezier curves split at their midpoint, x = 64). -->
+  <defs>
+    <linearGradient id="day" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd877"/><stop offset="1" stop-color="#f6a23c"/>
+    </linearGradient>
+    <linearGradient id="night" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8f8df2"/><stop offset="1" stop-color="#4644b2"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="#1e2430"/>
+  <path d="M8 64 C19 45 41.5 35.5 64 35.5 L64 92.5 C41.5 92.5 19 83 8 64 Z" fill="url(#day)"/>
+  <path d="M64 35.5 C86.5 35.5 109 45 120 64 C109 83 86.5 92.5 64 92.5 Z" fill="url(#night)"/>
+  <circle cx="64" cy="64" r="20" fill="#f4f6fa"/>
+  <circle cx="64" cy="64" r="9" fill="#1e2430"/>
+  <path d="M8 64 C30 26 98 26 120 64 C98 102 30 102 8 64 Z" fill="none" stroke="#f4f6fa" stroke-width="5"/>
+</svg>

@@ -2,7 +2,12 @@
 //
 //   autopass install          install the systemd user unit that starts autopassd
 //                           with SteamVR and stops it with SteamVR; start it
-//   autopass uninstall        stop and remove the unit, switch back to colour
+//   autopass uninstall [--purge]
+//                           stop and remove the unit and the launcher entry,
+//                           switch back to colour; --purge also deletes the
+//                           programs, settings and logs
+//   autopass mode [auto|colour|ir]
+//                           show or set the passthrough mode
 //   autopass status           autopassd's status and whether the unit is active
 //   autopass update           download and install the latest release
 //   autopass report           write ~/frame-autopass-report.txt for a bug report
@@ -22,6 +27,7 @@
 // milliseconds; that never starts SteamVR and does not wake the headset.
 
 #include "app_paths.hpp"
+#include "light_policy.hpp"
 #include "passthrough_state.hpp"
 #include "private_camera.hpp"
 
@@ -42,9 +48,47 @@ constexpr const char* kInstallScript = "https://github.com/bod09/frame-autopass/
 
 int usage() {
     std::fprintf(stderr,
-        "usage: autopass install | uninstall | status | update | report | version |\n"
-        "                guard [reset] | state [SECONDS] | get | set rgb|mono [--quiet]\n");
+        "usage: autopass install | uninstall [--purge] | status | mode [auto|colour|ir] |\n"
+        "                update | report | version | guard [reset] | state [SECONDS] | get |\n"
+        "                set rgb|mono [--quiet]\n");
     return 2;
+}
+
+std::string data_home() {
+    const char* xdg = std::getenv("XDG_DATA_HOME");
+    const char* home = std::getenv("HOME");
+    return xdg && *xdg == '/' ? xdg : std::string(home ? home : "/tmp") + "/.local/share";
+}
+
+// The settings panel's entry in the Frame's app launcher. The launcher hides
+// entries with Terminal=true, and needs an absolute Exec path. The file is
+// named after the panel's application ID so KDE's taskbar can match the
+// running window to it (and show its icon).
+constexpr const char* kAppId = "io.github.bod09.FrameAutopass";
+std::string desktop_path() { return data_home() + "/applications/" + kAppId + ".desktop"; }
+// Name used before 0.2.0, removed on install and uninstall.
+std::string old_desktop_path() { return data_home() + "/applications/frame-autopass.desktop"; }
+
+// The icon, installed into the user's icon theme under the app ID: shells
+// that look icons up by name (the Frame's VR taskbar) cannot use a path.
+std::string theme_icon_path() { return data_home() + "/icons/hicolor/scalable/apps/" + kAppId + ".svg"; }
+
+// Asks KDE to re-read app entries so new icons show without a restart.
+void refresh_app_cache() {
+    std::system("command -v kbuildsycoca6 >/dev/null 2>&1 && kbuildsycoca6 >/dev/null 2>&1");
+}
+
+std::string desktop_text() {
+    const std::string dir = autopass::install_dir();
+    return "[Desktop Entry]\n"
+           "Type=Application\n"
+           "Name=Frame Autopass\n"
+           "Comment=Settings only: switching runs in the background with SteamVR\n"
+           "Exec=" + dir + "/autopass-settings\n"
+           "Icon=" + std::string(kAppId) + "\n"
+           "Terminal=false\n"
+           "StartupWMClass=" + std::string(kAppId) + "\n"
+           "Categories=Settings;Utility;\n";
 }
 
 std::string unit_path() {
@@ -110,18 +154,72 @@ int install() {
         return 1;
     }
     std::printf("installed %s: autopassd now starts and stops with SteamVR\n", path.c_str());
+    if (::access((dir + "/autopass-settings").c_str(), X_OK) == 0) {
+        const std::string entry = desktop_path();
+        std::remove(old_desktop_path().c_str());
+        std::string icon;
+        const std::string theme_icon = theme_icon_path();
+        if (!autopass::read_file(dir + "/autopass.svg", &icon) ||
+            !autopass::make_dirs(theme_icon.substr(0, theme_icon.rfind('/'))) ||
+            !autopass::write_file_atomic(theme_icon, icon))
+            std::fprintf(stderr, "could not install the icon to %s\n", theme_icon.c_str());
+        if (autopass::make_dirs(entry.substr(0, entry.rfind('/'))) && autopass::write_file_atomic(entry, desktop_text())) {
+            refresh_app_cache();
+            std::printf("added Frame Autopass to the app launcher\n");
+        }
+        else
+            std::fprintf(stderr, "could not write %s (the service is installed anyway)\n", entry.c_str());
+    }
     return 0;
 }
 
 int switch_source(bool want_rgb, bool quiet);
 
-int uninstall() {
+// Deletes a directory tree we created (rm -rf on a fixed path of ours).
+void remove_tree(const std::string& path) {
+    if (path.size() < 10 || path.find("frame-autopass") == std::string::npos) return;  // never anything else
+    const std::string cmd = "rm -rf '" + path + "'";
+    if (std::system(cmd.c_str()) != 0) std::fprintf(stderr, "could not remove %s\n", path.c_str());
+}
+
+int uninstall(bool purge) {
     systemctl({"disable", "--now", kUnit}, true);
     std::remove(unit_path().c_str());
     systemctl({"daemon-reload"}, true);
-    std::printf("removed %s\n", kUnit);
+    std::remove(desktop_path().c_str());
+    std::remove(old_desktop_path().c_str());
+    std::remove(theme_icon_path().c_str());
+    refresh_app_cache();
+    std::printf("removed %s and the launcher entry\n", kUnit);
     // Leave the headset showing colour, the stock behaviour with the module.
     switch_source(true, true);
+    if (purge) {
+        remove_tree(autopass::config_dir());
+        remove_tree(autopass::install_dir());
+        std::printf("removed %s and %s: frame-autopass is gone\n", autopass::install_dir().c_str(),
+                    autopass::config_dir().c_str());
+    }
+    return 0;
+}
+
+int mode(const char* value) {
+    std::string text;
+    if (!value) {
+        const bool set = autopass::read_file(autopass::mode_path(), &text);
+        std::printf("%s\n", set && !text.empty() ? text.substr(0, text.find('\n')).c_str() : "auto");
+        return 0;
+    }
+    autopass::Mode m;
+    if (!autopass::parse_mode(value, &m)) {
+        std::fprintf(stderr, "mode must be auto, colour or ir\n");
+        return 2;
+    }
+    if (!autopass::make_dirs(autopass::config_dir()) ||
+        !autopass::write_file_atomic(autopass::mode_path(), std::string(autopass::to_string(m)) + "\n")) {
+        std::fprintf(stderr, "cannot write %s\n", autopass::mode_path().c_str());
+        return 1;
+    }
+    std::printf("mode: %s\n", autopass::to_string(m));
     return 0;
 }
 
@@ -296,7 +394,9 @@ int main(int argc, char** argv) {
     if (argc < 2) return usage();
     const std::string cmd = argv[1];
     if (cmd == "install" && argc == 2) return install();
-    if (cmd == "uninstall" && argc == 2) return uninstall();
+    if (cmd == "uninstall" && argc == 2) return uninstall(false);
+    if (cmd == "uninstall" && argc == 3 && std::string(argv[2]) == "--purge") return uninstall(true);
+    if (cmd == "mode" && argc <= 3) return mode(argc == 3 ? argv[2] : nullptr);
     if (cmd == "status" && argc == 2) return status();
     if (cmd == "update" && argc == 2) return update();
     if (cmd == "report" && argc == 2) return report();

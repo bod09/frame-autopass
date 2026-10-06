@@ -39,6 +39,7 @@
 #include <deque>
 #include <optional>
 #include <poll.h>
+#include <sys/inotify.h>
 #include <spawn.h>
 #include <string>
 #include <sys/file.h>
@@ -196,6 +197,26 @@ int main(int argc, char** argv) {
     autopass::EvidenceBuilder evidence(cfg.sensors);
     log(std::string("autopassd ") + autopass::version() + " started: showing " + autopass::to_string(initial));
 
+    // Passthrough mode (auto / always colour / always IR) from the mode
+    // file, re-read whenever it changes.
+    const auto read_mode = [] {
+        std::string text;
+        autopass::Mode m = autopass::Mode::Auto;
+        if (autopass::read_file(autopass::mode_path(), &text)) {
+            while (!text.empty() && (text.back() == '\n' || text.back() == ' ')) text.pop_back();
+            if (!autopass::parse_mode(text, &m)) m = autopass::Mode::Auto;
+        }
+        return m;
+    };
+    autopass::Mode mode = read_mode();
+    if (mode != autopass::Mode::Auto) policy.set_mode(now_ms(), mode);
+    log(std::string("mode: ") + autopass::to_string(mode));
+    const int config_watch = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (config_watch >= 0) ::inotify_add_watch(config_watch, autopass::config_dir().c_str(), IN_CLOSE_WRITE | IN_MOVED_TO);
+    // A forced mode switches once when it is chosen and each time passthrough
+    // appears; it never polls in between.
+    bool force_pending = true;
+
     double last_colour_ts = -1;
     double mono_ts_at_last_light = 0;
     std::uint64_t last_ir_log_ms = 0;
@@ -216,7 +237,7 @@ int main(int argc, char** argv) {
     std::string last_reason, last_status;
 
     autopass::Cause last_cause = autopass::Cause::None;
-    const auto apply = [&](Source target, const std::string& reason, std::uint64_t now) {
+    const auto apply = [&](Source target, const std::string& reason, std::uint64_t now, bool automatic = true) {
         if (!blocked.empty()) {
             log(std::string("would switch to ") + autopass::to_string(target) + " (" + reason + ") [" + blocked + "]");
             return;
@@ -236,7 +257,7 @@ int main(int argc, char** argv) {
             recent_ir.clear();
             expect_source_until_ms = now + 3000;
             last_switch_wall = static_cast<long long>(std::time(nullptr));
-            evidence.on_switched(now, target, true, last_cause);
+            evidence.on_switched(now, target, automatic, last_cause);
         } else if (rc == kSetMismatch) {
             log("SteamVR's camera interface changed (SteamVR update?); switching disabled until frame-autopass "
                 "is updated (`autopass update`)");
@@ -259,10 +280,29 @@ int main(int argc, char** argv) {
     // means: sleep until XRService logs something.
     int wait_ms = 0;
     while (!g_stop) {
-        pollfd pfd{xr.fd(), POLLIN, 0};
-        if (::poll(&pfd, 1, wait_ms) < 0 && errno != EINTR) break;
+        pollfd pfds[2] = {{xr.fd(), POLLIN, 0}, {config_watch, POLLIN, 0}};
+        if (::poll(pfds, config_watch >= 0 ? 2 : 1, wait_ms) < 0 && errno != EINTR) break;
         if (g_stop) break;
         const std::uint64_t now = now_ms();
+
+        if (config_watch >= 0 && (pfds[1].revents & POLLIN)) {
+            alignas(inotify_event) char events[4096];
+            bool mode_touched = false;
+            for (ssize_t n; (n = ::read(config_watch, events, sizeof events)) > 0;)
+                for (char* p = events; p < events + n;) {
+                    const auto* e = reinterpret_cast<const inotify_event*>(p);
+                    if (e->len && std::string(e->name) == "mode") mode_touched = true;
+                    p += sizeof(inotify_event) + e->len;
+                }
+            const autopass::Mode m = mode_touched ? read_mode() : mode;
+            if (m != mode) {
+                mode = m;
+                log(std::string("mode: ") + autopass::to_string(mode));
+                policy.set_mode(now, mode);
+                evidence.reset();
+                force_pending = true;
+            }
+        }
 
         const bool xr_changed = xr.update();
         const autopass::XrState& xs = xr.state();
@@ -319,12 +359,21 @@ int main(int argc, char** argv) {
             last_colour_ts = -1;
             dark_seen_ms.reset();
             lit_seen_ms.reset();
+            force_pending = true;
         }
 
         Evidence ev = Evidence::Unknown;
         Source shown = policy.source();
         bool want_ir = false;
-        if (active) {
+        if (active && mode != autopass::Mode::Auto) {
+            // Always colour or always IR: switch if needed, then sleep.
+            const Source target = mode == autopass::Mode::ForceColor ? Source::Color : Source::Ir;
+            if (const auto snap = state.read()) shown = snap->config.rgb ? Source::Color : Source::Ir;
+            if (force_pending && shown != target)
+                apply(target, std::string("mode: always ") + autopass::to_string(target), now, false);
+            force_pending = false;
+            last_reason = std::string("mode: ") + autopass::to_string(mode);
+        } else if (active) {
             if (state.path().empty() && now - last_state_retry_ms > 5000) {
                 last_state_retry_ms = now;
                 state = autopass::PassthroughState();
@@ -401,7 +450,7 @@ int main(int argc, char** argv) {
         // (XRService's "emitters on" line wakes autopassd at once when it gets
         // dark). IR shown: read the IR camera's light value 4 times a second
         // while it matters, otherwise wait for XRService's log.
-        if (!active) wait_ms = -1;
+        if (!active || mode != autopass::Mode::Auto) wait_ms = -1;
         else if (pending) wait_ms = 250;
         else if (want_ir) wait_ms = 250;
         else if (shown == Source::Color) wait_ms = 1000;
@@ -411,17 +460,19 @@ int main(int argc, char** argv) {
         std::snprintf(buf, sizeof buf,
             "{\"pid\": %d, \"passthrough\": \"%s\", \"standby\": \"%s\", \"showing\": \"%s\", "
             "\"ir_emitters\": \"%s\", \"tracking\": \"%s\", \"evidence\": \"%s\", \"cooldown_s\": %.0f, "
-            "\"can_switch\": %s, \"blocked\": \"%s\", \"reason\": \"%s\", \"version\": \"%s\"}\n",
+            "\"can_switch\": %s, \"blocked\": \"%s\", \"reason\": \"%s\", \"version\": \"%s\", \"mode\": \"%s\"}\n",
             static_cast<int>(::getpid()), tri(xs.passthrough, "shown", "hidden"), tri(xs.standby, "yes", "no"),
             autopass::to_string(policy.source()), tri(xs.emitters, "on", "off"), tri(xs.tracking_lost, "lost", "ok"),
             autopass::to_string(ev), policy.cooldown_ms() / 1000.0, blocked.empty() ? "true" : "false",
-            blocked.c_str(), json_escape(active ? last_reason : "").c_str(), autopass::version());
+            blocked.c_str(), json_escape(active ? last_reason : "").c_str(), autopass::version(),
+            autopass::to_string(mode));
         if (buf != last_status) {
             autopass::write_file_atomic(autopass::status_path(), buf);
             last_status = buf;
         }
     }
 
+    if (config_watch >= 0) ::close(config_watch);
     xr.stop();
     log("autopassd stopped");
     if (g_log) std::fclose(g_log);

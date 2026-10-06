@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""Frame Autopass settings panel.
+
+Launched from the Steam Frame's app launcher and used in VR with a
+controller pointer, so everything is large and needs no typing: the
+passthrough mode, the current state, updates, and uninstall.
+
+It changes nothing itself. Every action runs the `autopass` command that
+sits next to this file, so the panel and the command line always agree.
+The network is used only when "Check for updates" or "Update" is pressed.
+
+Needs GTK 4 and libadwaita 1.5 through PyGObject, which SteamOS ships.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import threading
+import urllib.request
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+AUTOPASS = HERE / "autopass"
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "frame-autopass"
+HINT_DISMISSED = CONFIG / "hint-dismissed"
+APP_ID = "io.github.bod09.FrameAutopass"  # also the launcher entry and icon name
+RELEASES_API = "https://api.github.com/repos/bod09/frame-autopass/releases/latest"
+
+MODES = [
+    ("auto", "Automatic", "Colour in the light, night vision in the dark"),
+    ("colour", "Always colour", "Arcturus Vision colour cameras"),
+    ("ir", "Always night vision", "The Frame's own infrared cameras"),
+]
+
+BLOCKED = {
+    "steamvr-changed": "A SteamVR update changed how cameras are switched. Check for updates below.",
+    "no-colour-module": "The Arcturus Vision module is not attached.",
+    "crash-guard": "Paused after XRService restarted twice. Restart SteamVR to resume.",
+    "observe-only": "Observe-only mode is set in autopass.conf.",
+}
+
+# Sized for a controller pointer in VR: big text, big targets.
+CSS = b"""
+window { font-size: 20px; }
+headerbar { min-height: 72px; }
+headerbar .title { font-size: 22px; font-weight: bold; }
+windowcontrols { border-spacing: 16px; }
+windowcontrols button { min-width: 60px; min-height: 60px; padding: 0; margin: 4px; }
+windowcontrols button image { -gtk-icon-size: 30px; }
+/* The minimise icon draws its dash at the bottom, like an underline; centre it. */
+windowcontrols button.minimize image { -gtk-icon-transform: translateY(-5px); }
+.section-inline { font-size: 18px; opacity: 0.7; }
+.big-button { min-height: 64px; padding: 8px 20px; }
+.mode-button { min-height: 84px; padding: 10px 22px; }
+.mode-button:checked { background: @accent_bg_color; color: @accent_fg_color; }
+.mode-title { font-size: 22px; font-weight: bold; }
+.mode-subtitle { font-size: 17px; font-weight: normal; opacity: 0.8; }
+.status-title { font-size: 28px; font-weight: bold; }
+.status-detail { font-size: 18px; opacity: 0.8; }
+.section-title { font-size: 18px; font-weight: bold; opacity: 0.7; }
+.notes { font-size: 17px; }
+.hint { padding: 16px 18px; border-radius: 12px; background: alpha(@accent_bg_color, 0.18); }
+.hint-text { font-size: 22px; }
+/* The uninstall confirmation, sized for a controller pointer too. */
+.dialog-body { font-size: 20px; }
+"""
+
+
+def run_autopass(*args, timeout=180):
+    """Runs the autopass command; returns (exit code, combined output)."""
+    try:
+        p = subprocess.run([str(AUTOPASS), *args], capture_output=True, text=True, timeout=timeout)
+        return p.returncode, (p.stdout + p.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, str(e)
+
+
+def installed_version():
+    code, out = run_autopass("version", timeout=10)
+    return out if code == 0 and out else "unknown"
+
+
+def read_status():
+    """autopassd's status.json, or None when it is not running."""
+    try:
+        status = json.loads((CONFIG / "status.json").read_text())
+        os.kill(int(status["pid"]), 0)
+        return status
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def read_mode():
+    try:
+        mode = (CONFIG / "mode").read_text().strip()
+        return mode if mode in {m[0] for m in MODES} else "auto"
+    except OSError:
+        return "auto"
+
+
+def label(text, css=None, wrap=True, xalign=0.0):
+    w = Gtk.Label(label=text, xalign=xalign, wrap=wrap)
+    if css:
+        w.add_css_class(css)
+    return w
+
+
+class Panel(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Frame Autopass", default_width=640, default_height=900)
+        self.latest = None
+        self.busy = False
+        self.removed = False
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22,
+                          margin_top=20, margin_bottom=28, margin_start=20, margin_end=20)
+
+        # This window is only settings: the switching runs without it. Shown
+        # until dismissed once.
+        if not HINT_DISMISSED.exists():
+            hint = Gtk.Box(spacing=16)
+            hint.add_css_class("hint")
+            text = label("Frame Autopass works in the background whenever SteamVR runs. "
+                         "This window is only for settings, so you can close it at any time.", "hint-text")
+            text.set_hexpand(True)
+            got_it = Gtk.Button(label="Got it", valign=Gtk.Align.CENTER)
+            got_it.add_css_class("big-button")
+            got_it.connect("clicked", self.on_hint_dismissed, hint)
+            hint.append(text)
+            hint.append(got_it)
+            content.append(hint)
+
+        # Current state.
+        self.status_title = label("", "status-title")
+        self.status_detail = label("", "status-detail")
+        status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        status_box.append(self.status_title)
+        status_box.append(self.status_detail)
+        content.append(status_box)
+
+        # Passthrough mode: three big buttons, one active.
+        content.append(label("Passthrough", "section-title"))
+        self.mode_buttons = {}
+        group = None
+        for key, title, subtitle in MODES:
+            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True,
+                           valign=Gtk.Align.CENTER)
+            text.append(label(title, "mode-title"))
+            text.append(label(subtitle, "mode-subtitle"))
+            button = Gtk.ToggleButton(child=text)
+            button.add_css_class("mode-button")
+            if group:
+                button.set_group(group)
+            group = group or button
+            button.connect("toggled", self.on_mode_toggled, key)
+            self.mode_buttons[key] = button
+        # Automatic, the point of the program, gets the full width; the two
+        # fixed modes share one row below it.
+        content.append(self.mode_buttons["auto"])
+        fixed = Gtk.Box(spacing=16, homogeneous=True)
+        fixed.append(self.mode_buttons["colour"])
+        fixed.append(self.mode_buttons["ir"])
+        content.append(fixed)
+
+        # Version and updates.
+        # The "Updates" heading with the version beside it; the button below,
+        # full width.
+        self.version_label = label("", "section-inline", wrap=False)
+        self.version_label.set_hexpand(True)
+        self.version_label.set_valign(Gtk.Align.CENTER)
+        update_title = label("Updates", "section-title", wrap=False)
+        update_title.set_valign(Gtk.Align.CENTER)
+        update_row = Gtk.Box(spacing=14)
+        update_row.append(update_title)
+        self.check_button = Gtk.Button(label="Check for updates")
+        self.check_button.add_css_class("big-button")
+        self.check_button.connect("clicked", self.on_check)
+        self.spinner = Gtk.Spinner()
+        update_row.append(self.version_label)
+        update_row.append(self.spinner)
+        content.append(update_row)
+        content.append(self.check_button)
+        self.update_info = label("")
+        self.update_info.set_visible(False)
+        self.update_notes = label("", "notes")
+        self.update_notes.set_visible(False)
+        self.update_button = Gtk.Button(label="")
+        self.update_button.add_css_class("big-button")
+        self.update_button.add_css_class("suggested-action")
+        self.update_button.set_visible(False)
+        self.update_button.connect("clicked", self.on_update)
+        content.append(self.update_info)
+        content.append(self.update_notes)
+        content.append(self.update_button)
+
+        # Uninstall.
+        content.append(label("Remove", "section-title"))
+        self.uninstall_button = Gtk.Button(label="Uninstall Frame Autopass")
+        self.uninstall_button.add_css_class("big-button")
+        self.uninstall_button.add_css_class("destructive-action")
+        self.uninstall_button.connect("clicked", self.on_uninstall)
+        content.append(self.uninstall_button)
+
+        self.clamp = Adw.Clamp(maximum_size=720, child=content)
+        scroller = Gtk.ScrolledWindow(child=self.clamp, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        view = Adw.ToolbarView(content=scroller)
+        # Quick settings, opened from the launcher in VR: full screen, with
+        # only large minimise and close buttons.
+        header = Adw.HeaderBar(decoration_layout=":minimize,close")
+        view.add_top_bar(header)
+        self.set_content(view)
+        self.maximize()
+
+        self.syncing = True
+        self.mode_buttons[read_mode()].set_active(True)
+        self.syncing = False
+        self.refresh_version()
+        self.refresh_status()
+        GLib.timeout_add_seconds(1, self.refresh_status)
+
+    def on_hint_dismissed(self, _button, hint):
+        try:
+            CONFIG.mkdir(parents=True, exist_ok=True)
+            HINT_DISMISSED.touch()
+        except OSError:
+            pass  # still hide it for now
+        hint.set_visible(False)
+
+    # State -----------------------------------------------------------------
+
+    def refresh_version(self):
+        self.version = installed_version()
+        self.version_label.set_text(self.version)
+
+    def refresh_status(self):
+        if self.removed:
+            return False  # stop the timer
+        status = read_status()
+        mode = read_mode()
+        if not self.mode_buttons[mode].get_active():
+            self.syncing = True
+            self.mode_buttons[mode].set_active(True)
+            self.syncing = False
+        if status is None:
+            self.status_title.set_text("Not running")
+            self.status_detail.set_text("It starts by itself whenever SteamVR runs.")
+        elif status.get("blocked") in BLOCKED:
+            self.status_title.set_text("Not switching")
+            self.status_detail.set_text(BLOCKED[status["blocked"]])
+        elif status.get("passthrough") != "shown" or status.get("standby") == "yes":
+            self.status_title.set_text("Passthrough is off")
+            self.status_detail.set_text("Ready for when you turn it on.")
+        else:
+            showing = "Colour" if status.get("showing") == "colour" else "Night vision"
+            self.status_title.set_text(f"Showing: {showing}")
+            self.status_detail.set_text("Switching automatically with the light." if mode == "auto"
+                                        else "Fixed until you choose Automatic.")
+        return True  # keep the timer
+
+    # Actions ---------------------------------------------------------------
+
+    def on_mode_toggled(self, button, key):
+        if self.syncing or not button.get_active():
+            return
+        code, out = run_autopass("mode", key, timeout=10)
+        if code != 0:
+            self.status_detail.set_text(out or "Could not change the mode.")
+        self.refresh_status()
+
+    def set_busy(self, busy):
+        self.busy = busy
+        self.spinner.set_spinning(busy)
+        for w in (self.check_button, self.update_button, self.uninstall_button):
+            w.set_sensitive(not busy)
+
+    def on_check(self, _button):
+        self.set_busy(True)
+        self.update_info.set_visible(True)
+        self.update_info.set_text("Checking...")
+        self.update_notes.set_visible(False)
+        self.update_button.set_visible(False)
+        threading.Thread(target=self.check_worker, daemon=True).start()
+
+    def check_worker(self):
+        try:
+            req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "frame-autopass-settings",
+                                                                "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                release = json.load(r)
+            result = (release.get("tag_name", ""), (release.get("body") or "").strip(), None)
+        except Exception as e:  # network errors, rate limits, bad JSON
+            result = (None, None, str(e))
+        GLib.idle_add(self.check_done, *result)
+
+    def check_done(self, tag, notes, error):
+        self.set_busy(False)
+        if error:
+            self.update_info.set_text(f"Could not check for updates: {error}")
+        elif tag == self.version:
+            self.update_info.set_text(f"You have the latest version ({tag}).")
+        else:
+            self.latest = tag
+            self.update_info.set_text(f"Version {tag} is available.")
+            if notes:
+                # GitHub release notes are Markdown; show list items as bullets.
+                lines = [("\u2022 " + l[2:]) if l.startswith(("- ", "* ")) else l for l in notes.splitlines()]
+                self.update_notes.set_text("\n".join(lines))
+                self.update_notes.set_visible(True)
+            self.update_button.set_label(f"Update to {tag}")
+            self.update_button.set_visible(True)
+        return False
+
+    def on_update(self, _button):
+        self.set_busy(True)
+        self.update_info.set_text("Updating...")
+        threading.Thread(target=self.update_worker, daemon=True).start()
+
+    def update_worker(self):
+        code, out = run_autopass("update")
+        GLib.idle_add(self.update_done, code, out)
+
+    def update_done(self, code, out):
+        self.set_busy(False)
+        self.refresh_version()
+        self.update_button.set_visible(False)
+        self.update_notes.set_visible(False)
+        if code == 0:
+            self.update_info.set_text(f"Updated to {self.version}.")
+        else:
+            last = out.splitlines()[-1] if out else "unknown error"
+            self.update_info.set_text(f"Update failed: {last}")
+        return False
+
+    def on_uninstall(self, _button):
+        # A custom dialog rather than Adw.AlertDialog, whose width is fixed
+        # and narrow: this one matches the content column.
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
+                      margin_top=28, margin_bottom=24, margin_start=28, margin_end=28)
+        box.append(label("Uninstall?", "status-title", xalign=0.5))
+        box.append(label("Removes Frame Autopass completely and puts passthrough back to colour. "
+                         "You can install it again any time.", "dialog-body", xalign=0.5))
+        box.get_last_child().set_justify(Gtk.Justification.CENTER)
+        buttons = Gtk.Box(spacing=16, homogeneous=True, margin_top=8)
+        cancel = Gtk.Button(label="Cancel")
+        confirm = Gtk.Button(label="Uninstall")
+        for b in (cancel, confirm):
+            b.add_css_class("big-button")
+            buttons.append(b)
+        confirm.add_css_class("destructive-action")
+        box.append(buttons)
+        dialog = Adw.Dialog(child=box, content_width=max(self.clamp.get_child().get_width(), 480))
+        cancel.connect("clicked", lambda _b: dialog.close())
+        confirm.connect("clicked", lambda _b: (dialog.close(), self.on_uninstall_response(dialog, "uninstall")))
+        dialog.set_default_widget(cancel)
+        dialog.set_focus(cancel)
+        dialog.present(self)
+
+    def on_uninstall_response(self, _dialog, response):
+        if response != "uninstall":
+            return
+        code, out = run_autopass("uninstall", "--purge", timeout=60)
+        self.removed = code == 0
+        for w in list(self.mode_buttons.values()) + [self.check_button, self.update_button, self.uninstall_button]:
+            w.set_sensitive(False)
+        self.status_title.set_text("Uninstalled" if code == 0 else "Uninstall failed")
+        self.status_detail.set_text("Frame Autopass has been removed. You can close this window."
+                                    if code == 0 else out)
+
+
+def main():
+    app = Adw.Application(application_id=APP_ID)
+
+    def activate(app):
+        # Always dark: the launcher session does not pass on the desktop's
+        # dark preference, and dark is easier on the eyes in a headset.
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+        # The window's icon, by name from the icon theme (installed there by
+        # `autopass install`), for taskbars that ask the window rather than
+        # its launcher entry.
+        Gtk.Window.set_default_icon_name(APP_ID)
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        win = app.get_active_window() or Panel(app)
+        win.present()
+
+    app.connect("activate", activate)
+    return app.run(sys.argv[:1])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
