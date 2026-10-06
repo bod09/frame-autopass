@@ -42,7 +42,8 @@ MODES = [
 BLOCKED = {
     "steamvr-changed": "A SteamVR update changed how cameras are switched. Check for updates below.",
     "no-colour-module": "The Arcturus Vision module is not attached.",
-    "crash-guard": "Paused after XRService restarted twice. Restart SteamVR to resume.",
+    "crash-guard": "Paused after XRService restarted twice. To resume, run "
+                   "`autopass guard reset` in Konsole, then restart SteamVR.",
     "observe-only": "Observe-only mode is set in autopass.conf.",
 }
 

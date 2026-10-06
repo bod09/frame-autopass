@@ -9,8 +9,9 @@ infrared (IR) passthrough in the dark. Turn the lights off and you can see
 in IR about 1.5 s later; turn them on and colour is back in about a second.
 There is nothing to press and nothing to configure.
 
-It runs entirely on the headset, never talks to the network, and does
-nothing at all while passthrough is not showing.
+It runs entirely on the headset, never goes online by itself (only when you
+check for updates), and does nothing at all while passthrough is not
+showing.
 
 ## Requirements
 
@@ -37,8 +38,9 @@ That's it. It starts automatically whenever SteamVR runs, from now on, and
 The installer checks that the Arcturus module is present, downloads the
 latest release, verifies its checksum, puts its programs in
 `~/.local/share/frame-autopass`, adds the launcher entry and registers a
-systemd user service that starts and stops with SteamVR. Everything stays in your home folder, so it
-survives SteamOS updates and needs no root access.
+systemd user service that starts and stops with SteamVR. Everything stays
+in your home folder, so it survives SteamOS updates and needs no root
+access.
 
 Prefer not to pipe a script into bash? Download
 `frame-autopass-aarch64.tar.gz` from the
@@ -95,6 +97,8 @@ From these:
   the moment a switch is allowed, as a flashing light would.
 - Losing tracking (which happens in the dark if you stand still) does not
   stop it working.
+- **Always colour / Always night vision:** it switches to that camera once
+  and then does nothing until you choose Automatic again.
 
 Known limits: in a dimly lit room, or with your face right up against a
 wall, the IR camera may not see enough light, so colour comes back when the
@@ -111,8 +115,9 @@ There is no public way to switch the passthrough camera, so frame-autopass
 uses a private SteamVR interface. Before every switch it checks that
 SteamVR's code still matches what it was built against. If an update
 changes it, frame-autopass stops switching (passthrough keeps working
-normally, just without automatic switching) and `autopass status` says so.
-Run `autopass update`; if no fixed release exists yet, please open an issue
+normally, just without automatic switching), and the settings panel and
+`autopass status` say so. Check for updates in the panel (or run
+`autopass update`); if no fixed release exists yet, please open an issue
 with the output of `autopass report`.
 
 ## Safety
@@ -152,9 +157,10 @@ make dist               # cross-compiled release package in dist/
 GitHub Actions builds and tests every push and publishes a release for every
 `v*` tag.
 
-`tools/` holds the research tools used to find all of this: a passive
-shared-memory recorder and sampler, and an annotated ARM64 disassembler for
-SteamVR's binaries.
+`tools/` holds the `autopass` control tool, the settings panel
+(`autopass-settings`) and its icon, plus the research tools used to find
+all of this: a passive shared-memory recorder and sampler, and an annotated
+ARM64 disassembler for SteamVR's binaries.
 
 ## Credits
 
