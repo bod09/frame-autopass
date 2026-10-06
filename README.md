@@ -31,12 +31,6 @@ right, then press Enter:
 curl -fsSL https://github.com/bod09/frame-autopass/releases/latest/download/install.sh | bash
 ```
 
-Or the short version, easier to type in VR:
-
-```sh
-curl -L bod09.github.io/frame-autopass/i | bash
-```
-
 That's it. It starts automatically whenever SteamVR runs, from now on.
 
 The installer checks that the Arcturus module is present, downloads the
